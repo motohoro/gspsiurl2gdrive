@@ -1,21 +1,50 @@
 # ==========================================
-# 設定項目（必要に応じて書き換えてください）
+# 設定項目（必要に応じて変更してください）
 # ==========================================
-$scriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
-
-# 1. 監視対象フォルダ（別の場所にする場合は "D:\フォルダ名" のように書き換え）
-$watchFolder = Join-Path $scriptPath "watch"
+# 1. 監視対象フォルダ（別の場所にする場合は "D:\フォルダ名" のように直接フルパスを指定）
+$watchFolder = Join-Path $PSScriptRoot "watch"
 
 # 2. 印刷済みファイルの移動先フォルダ
-$printedFolder = Join-Path $scriptPath "printed"
+$printedFolder = Join-Path $PSScriptRoot "printed"
 
-# 3. SumatraPDF.exe のパス
-$sumatraPath = Join-Path $scriptPath "SumatraPDF.exe"
+# 3. 印刷済みファイルの保持期間（日数）
+$keepDays = 100
+
+# 4. SumatraPDF.exe のパス
+$sumatraPath = Join-Path $PSScriptRoot "SumatraPDF.exe"
 
 
 # --- フォルダがなければ自動作成 ---
 if (-not (Test-Path $watchFolder)) { New-Item -Path $watchFolder -ItemType Directory | Out-Null }
 if (-not (Test-Path $printedFolder)) { New-Item -Path $printedFolder -ItemType Directory | Out-Null }
+
+
+# ==========================================
+# 0. 起動時：古い印刷済みファイルの自動クリーンアップ
+# ==========================================
+Write-Host "メンテナンス: 印刷済みフォルダ内の古いファイル（$keepDays 日以前）をチェック中..." -ForegroundColor Cyan
+
+# 削除対象となる基準日時を計算
+$expirationDate = (Get-Date).AddDays(-$keepDays)
+
+# 基準日時より古いPDFを取得して削除
+$oldFiles = Get-ChildItem -Path $printedFolder -Filter "*.pdf" -File | Where-Object { $_.LastWriteTime -lt $expirationDate }
+
+if ($oldFiles.Count -gt 0) {
+    Write-Host "$($oldFiles.Count) 件の古いファイルが見つかりました。削除を開始します..." -ForegroundColor Yellow
+    foreach ($file in $oldFiles) {
+        try {
+            Remove-Item -Path $file.FullName -Force
+            Write-Host "[削除完了] $($file.Name) (最終更新日: $($file.LastWriteTime.ToString('yyyy/MM/dd')))" -ForegroundColor DarkGray
+        }
+        catch {
+            Write-Warning "[削除失敗] $($file.Name): $_"
+        }
+    }
+}
+else {
+    Write-Host "削除対象の古いファイルはありませんでした。" -ForegroundColor Green
+}
 
 
 # ==========================================
@@ -53,13 +82,13 @@ function Process-PdfFile ($filePath) {
                 Start-Process -FilePath $filePath -Verb Print -WindowStyle Hidden
             }
             
-            # プリンタへのスプール（データ送信）を少し待つための安全マージン
+            # プリンタへのスプール待機
             Start-Sleep -Seconds 3
 
             # 移動先のフルパスを設定
             $targetPath = Join-Path $printedFolder $fileName
 
-            # 同名ファイルが移動先に存在する場合、ファイル名に日時を付与して衝突を避ける
+            # 同名ファイルが存在する場合、ファイル名に日時を付与
             if (Test-Path $targetPath) {
                 $baseName = [System.IO.Path]::GetFileNameWithoutExtension($fileName)
                 $extension = [System.IO.Path]::GetExtension($fileName)
@@ -87,7 +116,6 @@ function Process-PdfFile ($filePath) {
 # ==========================================
 Write-Host "起動処理: 監視フォルダ内の既存PDFをチェックしています..." -ForegroundColor Cyan
 
-# フォルダ内にある既存のPDFをすべて取得
 $existingPdfs = Get-ChildItem -Path $watchFolder -Filter "*.pdf" -File
 
 if ($existingPdfs.Count -gt 0) {
@@ -111,13 +139,10 @@ $watcher.Filter = "*.pdf"
 $watcher.IncludeSubdirectories = $false
 $watcher.EnableRaisingEvents = $true
 
-# 新規作成イベント発生時のアクション
 $action = {
-    # 共通処理関数を呼び出す
     Process-PdfFile $Event.SourceEventArgs.FullPath
 }
 
-# イベントの登録解除と再登録
 Unregister-Event -SourceIdentifier "PdfPrinter" -ErrorAction SilentlyContinue
 Register-ObjectEvent $watcher "Created" -SourceIdentifier "PdfPrinter" -Action $action | Out-Null
 
