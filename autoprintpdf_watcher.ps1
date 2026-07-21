@@ -34,7 +34,7 @@ if ($oldFiles.Count -gt 0) {
     Write-Host "$($oldFiles.Count) 件の古いファイルが見つかりました。削除を開始します..." -ForegroundColor Yellow
     foreach ($file in $oldFiles) {
         try {
-            Remove-Item -Path $file.FullName -Force
+            Remove-Item -Path $file.FullName -Force -ErrorAction Stop
             Write-Host "[削除完了] $($file.Name) (最終更新日: $($file.LastWriteTime.ToString('yyyy/MM/dd')))" -ForegroundColor DarkGray
         }
         catch {
@@ -54,7 +54,7 @@ function Process-PdfFile ($filePath) {
     $fileName = Split-Path $filePath -Leaf
     Write-Host "[処理開始] 対象ファイル: $fileName" -ForegroundColor Yellow
 
-    # --- 1. 書き込み完了待ちループ ---
+    # --- 1. 書き込み完了待ちループ（受信側の書き込み待ち） ---
     $isFileReady = $false
     $retryCount = 0
     $maxRetry = 60 # 最大60秒待機
@@ -71,7 +71,7 @@ function Process-PdfFile ($filePath) {
         }
     }
 
-    # --- 2. 印刷 & 移動 ---
+    # --- 2. 印刷処理 ＆ ロック解除待ち移動 ---
     if ($isFileReady) {
         try {
             # SumatraPDFを使って印刷（画面非表示・自動縮小フィット）
@@ -82,8 +82,28 @@ function Process-PdfFile ($filePath) {
                 Start-Process -FilePath $filePath -Verb Print -WindowStyle Hidden
             }
             
-            # プリンタへのスプール待機
-            Start-Sleep -Seconds 3
+            # --- ★ 原因1の対策：印刷完了後のファイルロック解除待ちループ ---
+            $isUnlocked = $false
+            $unlockRetry = 0
+            $maxUnlockRetry = 30 # 最大30秒待機
+
+            while (-not $isUnlocked -and $unlockRetry -lt $maxUnlockRetry) {
+                try {
+                    # 排他モード（ReadWrite）でファイルが開けるかテスト
+                    $testStream = [System.IO.File]::Open($filePath, 'Open', 'ReadWrite', 'None')
+                    $testStream.Close()
+                    $isUnlocked = $true
+                }
+                catch {
+                    # まだSumatraPDF等のプロセスが掴んでいる場合は1秒待機
+                    $unlockRetry++
+                    Start-Sleep -Seconds 1
+                }
+            }
+
+            if (-not $isUnlocked) {
+                Write-Warning "[警告] ロック解除待機がタイムアウトしましたが移動を試みます: $fileName"
+            }
 
             # 移動先のフルパスを設定
             $targetPath = Join-Path $printedFolder $fileName
@@ -97,8 +117,8 @@ function Process-PdfFile ($filePath) {
                 $targetPath = Join-Path $printedFolder $newFileName
             }
 
-            # ファイルを移動
-            Move-Item -Path $filePath -Destination $targetPath -Force
+            # ファイル移動の実行
+            Move-Item -Path $filePath -Destination $targetPath -Force -ErrorAction Stop
             Write-Host "[完了] 印刷および移動が完了しました: $fileName -> $(Split-Path $targetPath -Leaf)" -ForegroundColor Green
         }
         catch {
