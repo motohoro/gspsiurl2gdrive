@@ -11,7 +11,7 @@ $printedFolder = Join-Path $PSScriptRoot "printed"
 $keepDays = 100
 
 # 4. SumatraPDF.exe のパス
-$sumatraPath = Join-Path $PSScriptRoot "SumatraPDF.exe"
+$sumatraPath = Join-Path $PSScriptRoot "SumatraPDF.exe" -replace '^\\[\\?]+\\', ''
 
 
 # --- フォルダがなければ自動作成 ---
@@ -51,6 +51,7 @@ else {
 # 印刷 ＆ フォルダ移動の共通処理
 # ==========================================
 function Process-PdfFile ($filePath) {
+    $filePath = $filePath -replace '^\\[\\?]+\\', ''
     $fileName = Split-Path $filePath -Leaf
     Write-Host "[処理開始] 対象ファイル: $fileName" -ForegroundColor Yellow
 
